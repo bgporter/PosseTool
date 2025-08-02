@@ -342,11 +342,28 @@ def extract_first_meaningful_paragraph(content, max_length=300):
     content = content.replace('&#62;', '>')
     
     # Split content into paragraphs (split on double newlines or <p> tags)
-    paragraphs = re.split(r'\n\s*\n|<p[^>]*>', content)
+    # We need to handle <p> tags more carefully to include the full paragraph
+    paragraphs = []
+    
+    # First split on double newlines
+    newline_paragraphs = re.split(r'\n\s*\n', content)
+    
+    for paragraph in newline_paragraphs:
+        # Check if this paragraph contains <p> tags
+        if '<p' in paragraph:
+            # Extract individual <p> elements
+            p_tags = re.findall(r'<p[^>]*>.*?</p>', paragraph, re.DOTALL | re.IGNORECASE)
+            paragraphs.extend(p_tags)
+        else:
+            paragraphs.append(paragraph)
     
     for paragraph in paragraphs:
         # Check for headings before cleaning HTML tags
         if re.match(r'^\s*<h[1-6][^>]*>.*?</h[1-6]>\s*$', paragraph, re.IGNORECASE | re.DOTALL):
+            continue
+        
+        # Skip img-caption paragraphs (these are just image captions, not meaningful content)
+        if re.search(r'class\s*=\s*["\'][^"\']*img-caption[^"\']*["\']', paragraph, re.IGNORECASE):
             continue
         
         # Clean the paragraph - remove HTML tags
