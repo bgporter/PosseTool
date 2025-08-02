@@ -768,7 +768,7 @@ def process_syndication(entry, services):
                     break  # Only process once per service, but continue to next service
         
         if service_processed:
-            print(f"DEBUG: {service.__class__.__name__} processed this entry")
+            print(f"DEBUG: {service.__class__.__name__} processed this entry") 
     
     return processed
 
