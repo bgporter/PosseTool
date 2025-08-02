@@ -310,6 +310,132 @@ def clean_html_text(text):
     return cleaned.strip()
 
 
+def extract_first_meaningful_paragraph(content, max_length=300):
+    """
+    Extract the first meaningful paragraph from content that is not a heading, image link, or admonition.
+    
+    Args:
+        content (str): HTML content to extract from
+        max_length (int): Maximum length for the extracted text
+        
+    Returns:
+        str: Extracted paragraph text, truncated to fit within max_length
+    """
+    if not content:
+        return ''
+    
+    # Normalize Unicode characters
+    content = unicodedata.normalize('NFC', content)
+    
+    # Unescape HTML entities first
+    content = html.unescape(content)
+    
+    # Handle common HTML entities that might not be handled by html.unescape
+    content = content.replace('&amp;', '&')
+    content = content.replace('&lt;', '<')
+    content = content.replace('&gt;', '>')
+    content = content.replace('&quot;', '"')
+    content = content.replace('&apos;', "'")
+    content = content.replace('&#39;', "'")
+    content = content.replace('&#34;', '"')
+    content = content.replace('&#60;', '<')
+    content = content.replace('&#62;', '>')
+    
+    # Split content into paragraphs (split on double newlines or <p> tags)
+    paragraphs = re.split(r'\n\s*\n|<p[^>]*>', content)
+    
+    for paragraph in paragraphs:
+        # Check for headings before cleaning HTML tags
+        if re.match(r'^\s*<h[1-6][^>]*>.*?</h[1-6]>\s*$', paragraph, re.IGNORECASE | re.DOTALL):
+            continue
+        
+        # Clean the paragraph - remove HTML tags
+        cleaned = re.sub(r'<[^>]+>', '', paragraph)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        
+        # Skip empty paragraphs
+        if not cleaned:
+            continue
+        
+        # Skip image links (lines that are just image URLs or img tags)
+        if re.match(r'^\s*(https?://[^\s]+\.(jpg|jpeg|png|gif|webp|svg))\s*$', cleaned, re.IGNORECASE):
+            continue
+        if re.match(r'^\s*<img[^>]*>\s*$', cleaned):
+            continue
+        
+        # Skip paragraphs that contain only image-related content
+        # Check if the paragraph contains only image URLs or HTML images
+        image_patterns = [
+            r'^\s*(https?://[^\s]+\.(jpg|jpeg|png|gif|webp|svg))\s*$',
+            r'^\s*<img[^>]*>\s*$'
+        ]
+        
+        # If the paragraph matches any image pattern exactly, skip it
+        if any(re.match(pattern, cleaned, re.IGNORECASE) for pattern in image_patterns):
+            continue
+        
+        # Also check if the paragraph contains only image-related content (multiple images)
+        # Remove all image patterns and see if anything is left
+        temp_cleaned = cleaned
+        for pattern in image_patterns:
+            temp_cleaned = re.sub(pattern, '', temp_cleaned, flags=re.IGNORECASE)
+        
+        # If nothing is left after removing all image patterns, skip this paragraph
+        if not temp_cleaned.strip():
+            continue
+        
+        # If we get here, we have a meaningful paragraph
+        # Truncate to fit within max_length
+        if len(cleaned) <= max_length:
+            return cleaned
+        else:
+            # Try to truncate at sentence boundaries
+            # Find sentence boundaries while preserving original punctuation
+            sentence_endings = re.finditer(r'[.!?]', cleaned)
+            current_text = ""
+            
+            for match in sentence_endings:
+                end_pos = match.end()
+                sentence = cleaned[:end_pos].strip()
+                
+                if len(sentence) <= max_length:
+                    current_text = sentence
+                else:
+                    # If even the first sentence is too long, truncate at word boundaries
+                    if not current_text:
+                        words = cleaned.split()
+                        for word in words:
+                            test_text = current_text + word + " "
+                            if len(test_text) <= max_length:
+                                current_text = test_text
+                            else:
+                                break
+                        current_text = current_text.strip()
+                        if current_text and not current_text.endswith('.'):
+                            current_text += "..."
+                    break
+            
+            return current_text.strip()
+        
+        # If no sentence boundaries found, truncate at word boundaries
+        if len(cleaned) > max_length:
+            words = cleaned.split()
+            current_text = ""
+            for word in words:
+                test_text = current_text + word + " "
+                if len(test_text) <= max_length:
+                    current_text = test_text
+                else:
+                    break
+            current_text = current_text.strip()
+            if current_text and not current_text.endswith('.'):
+                current_text += "..."
+            return current_text
+    
+    # If no meaningful paragraph found, return empty string
+    return ''
+
+
 class SyndicationService:
     """Base class for social media syndication services."""
     
@@ -366,25 +492,31 @@ class BlueskyService(SyndicationService):
     
     def _prepare_post_text(self, entry):
         """Prepare the post text and facets."""
-        summary = clean_html_text(entry.get('summary', ''))
         url = entry.get('url', '')
         
-        # Ensure the text is properly encoded for Bluesky
-        post_text = unicodedata.normalize('NFC', summary)
+        # Calculate available space for text (reserve space for URL first)
+        if url:
+            available_space = BLUESKY_CHAR_LIMIT - len(url) - 2  # 2 for "\n\n"
+        else:
+            available_space = BLUESKY_CHAR_LIMIT
         
-        # Add URL if available and there's room
+        # Extract first meaningful paragraph from content with the available space
+        content = entry.get('content', '')
+        post_text = extract_first_meaningful_paragraph(content, available_space)
+        
+        # If no meaningful paragraph found, fall back to summary
+        if not post_text:
+            summary = clean_html_text(entry.get('summary', ''))
+            post_text = unicodedata.normalize('NFC', summary)
+            # Truncate summary if needed
+            if len(post_text) > available_space:
+                post_text = post_text[:available_space-3] + "..."
+        
+        # Add URL if available
         facets = []
         if url:
-            # Bluesky has a character limit
-            if len(post_text) + len(url) + 2 <= BLUESKY_CHAR_LIMIT:
-                post_text += f"\n\n{url}"
-                facets.append(self._create_link_facet(post_text, url))
-            else:
-                # Truncate summary to make room for URL
-                available_space = BLUESKY_CHAR_LIMIT - len(url) - 3  # 3 for "\n\n"
-                if available_space > 10:  # Ensure we have some meaningful text
-                    post_text = post_text[:available_space] + "...\n\n" + url
-                    facets.append(self._create_link_facet(post_text, url))
+            post_text += f"\n\n{url}"
+            facets.append(self._create_link_facet(post_text, url))
         
         return post_text, facets
     
@@ -667,21 +799,29 @@ class MastodonService(SyndicationService):
     
     def _prepare_post_text(self, entry):
         """Prepare the post text for Mastodon."""
-        summary = clean_html_text(entry.get('summary', ''))
         url = entry.get('url', '')
         
-        # Ensure the text is properly encoded
-        post_text = unicodedata.normalize('NFC', summary)
+        # Calculate available space for text (reserve space for URL first)
+        if url:
+            available_space = 500 - len(url) - 2  # 2 for "\n\n" and Mastodon has 500 char limit
+        else:
+            available_space = 500
         
-        # Add URL if available and there's room
-        # Mastodon has a 500 character limit
-        if url and len(post_text) + len(url) + 2 <= 500:
+        # Extract first meaningful paragraph from content with the available space
+        content = entry.get('content', '')
+        post_text = extract_first_meaningful_paragraph(content, available_space)
+        
+        # If no meaningful paragraph found, fall back to summary
+        if not post_text:
+            summary = clean_html_text(entry.get('summary', ''))
+            post_text = unicodedata.normalize('NFC', summary)
+            # Truncate summary if needed
+            if len(post_text) > available_space:
+                post_text = post_text[:available_space-3] + "..."
+        
+        # Add URL if available
+        if url:
             post_text += f"\n\n{url}"
-        elif url:
-            # Truncate summary to make room for URL
-            available_space = 500 - len(url) - 3  # 3 for "\n\n"
-            if available_space > 10:  # Ensure we have some meaningful text
-                post_text = post_text[:available_space] + "...\n\n" + url
         
         return post_text
     
