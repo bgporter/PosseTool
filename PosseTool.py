@@ -403,15 +403,17 @@ def extract_first_meaningful_paragraph(content, max_length=300):
                 else:
                     # If even the first sentence is too long, truncate at word boundaries
                     if not current_text:
+                        # Reserve space for "..."
+                        available_space = max_length - 3
                         words = cleaned.split()
                         for word in words:
                             test_text = current_text + word + " "
-                            if len(test_text) <= max_length:
+                            if len(test_text) <= available_space:
                                 current_text = test_text
                             else:
                                 break
                         current_text = current_text.strip()
-                        if current_text and not current_text.endswith('.'):
+                        if current_text:
                             current_text += "..."
                     break
             
@@ -419,16 +421,18 @@ def extract_first_meaningful_paragraph(content, max_length=300):
         
         # If no sentence boundaries found, truncate at word boundaries
         if len(cleaned) > max_length:
+            # Reserve space for "..."
+            available_space = max_length - 3
             words = cleaned.split()
             current_text = ""
             for word in words:
                 test_text = current_text + word + " "
-                if len(test_text) <= max_length:
+                if len(test_text) <= available_space:
                     current_text = test_text
                 else:
                     break
             current_text = current_text.strip()
-            if current_text and not current_text.endswith('.'):
+            if current_text:
                 current_text += "..."
             return current_text
     
