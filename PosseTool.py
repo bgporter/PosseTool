@@ -13,13 +13,14 @@ import argparse
 import requests
 import xml.etree.ElementTree as ET
 import html
+import yaml
 from urllib.parse import urlparse
 from pathlib import Path
 
 
 def download_feed(feed_url):
     """
-    Download the atom feed from the provided URL.
+    Download the atom feed from the provided URL with proper UTF-8 handling.
     
     Args:
         feed_url (str): The URL of the atom feed
@@ -33,7 +34,16 @@ def download_feed(feed_url):
     try:
         response = requests.get(feed_url, timeout=30)
         response.raise_for_status()
-        return response.text
+        
+        # Explicitly decode as UTF-8 to avoid encoding issues
+        # This fixes the "Â" character issue where non-breaking spaces are misdecoded
+        content = response.content.decode('utf-8', errors='replace')
+        
+        # Normalize Unicode to handle any remaining encoding inconsistencies
+        import unicodedata
+        content = unicodedata.normalize('NFC', content)
+        
+        return content
     except requests.RequestException as e:
         print(f"Error downloading feed from {feed_url}: {e}")
         sys.exit(1)
@@ -41,7 +51,7 @@ def download_feed(feed_url):
 
 def safe_text(element):
     """
-    Safely extract text from an XML element.
+    Safely extract text from an XML element with proper UTF-8 handling.
     
     Args:
         element: XML element or None
@@ -50,7 +60,12 @@ def safe_text(element):
         str: Text content or empty string
     """
     if element is not None and element.text is not None:
-        return element.text.strip()
+        # Ensure proper UTF-8 encoding
+        text = element.text.strip()
+        # Normalize Unicode characters
+        import unicodedata
+        text = unicodedata.normalize('NFC', text)
+        return text
     return ''
 
 
@@ -292,7 +307,7 @@ def sanitize_filename(title):
 
 def clean_html_text(text):
     """
-    Clean HTML text by removing HTML entities and tags.
+    Clean HTML text by removing HTML entities and tags with proper UTF-8 handling.
     
     Args:
         text (str): HTML text to clean
@@ -303,58 +318,360 @@ def clean_html_text(text):
     if not text:
         return ''
     
+    # Normalize Unicode characters first
+    import unicodedata
+    text = unicodedata.normalize('NFC', text)
+    
     # Unescape HTML entities
     cleaned = html.unescape(text)
     
     # Remove HTML tags
     cleaned = re.sub(r'<[^>]+>', '', cleaned)
     
-    # Remove extra whitespace
+    # Remove extra whitespace and normalize spaces
     cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    # Remove any remaining control characters except newlines and tabs
+    cleaned = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', cleaned)
     
     return cleaned.strip()
 
 
-def write_entry_to_text(entry, output_dir='.'):
+class SyndicationService:
+    """Base class for social media syndication services."""
+    
+    def __init__(self, credentials, test_mode=False):
+        self.credentials = credentials
+        self.test_mode = test_mode
+    
+    def can_handle(self, trigger_tag):
+        """Check if this service can handle the given trigger tag."""
+        return False
+    
+    def post(self, entry):
+        """Post an entry to the service. Must be implemented by subclasses."""
+        raise NotImplementedError
+    
+    def _log_test_post(self, service_name, entry_title, post_content):
+        """Log what would be posted in test mode."""
+        if self.test_mode:
+            print(f"[TEST MODE] Would post to {service_name}: {entry_title}")
+            print(f"[TEST MODE] Post content ({len(post_content)} chars):")
+            print(f"---")
+            print(post_content)
+            print(f"---")
+    
+    def _log_test_error(self, service_name, error):
+        """Log what error would occur in test mode."""
+        if self.test_mode:
+            print(f"[TEST MODE] Would fail to post to {service_name}: {error}")
+
+
+class BlueskyService(SyndicationService):
+    """Bluesky syndication service using atproto."""
+    
+    def __init__(self, credentials, test_mode=False):
+        super().__init__(credentials, test_mode)
+        self.client = None
+    
+    def can_handle(self, trigger_tag):
+        return trigger_tag == 'bsky'
+    
+    def authenticate(self):
+        """Authenticate with Bluesky using credentials."""
+        try:
+            from atproto import Client
+            self.client = Client()
+            self.client.login(
+                self.credentials.get('identifier'),
+                self.credentials.get('password')
+            )
+            return True
+        except Exception as e:
+            print(f"Bluesky authentication failed: {e}")
+            return False
+    
+    def post(self, entry):
+        """Post a skeet to Bluesky."""
+        if not self.client and not self.test_mode:
+            if not self.authenticate():
+                return False
+        
+        try:
+            # Clean the summary text with proper encoding
+            summary = clean_html_text(entry.get('summary', ''))
+            url = entry.get('url', '')
+            
+            # Ensure the text is properly encoded for Bluesky
+            import unicodedata
+            post_text = unicodedata.normalize('NFC', summary)
+            
+            # Add URL if available and there's room
+            facets = []
+            if url:
+                # Bluesky has a 300 character limit
+                if len(post_text) + len(url) + 2 <= 300:
+                    post_text += f"\n\n{url}"
+                    # Create a facet for the link
+                    link_start = len(post_text) - len(url)
+                    link_end = len(post_text)
+                    facets.append({
+                        "index": {
+                            "byteStart": link_start,
+                            "byteEnd": link_end
+                        },
+                        "features": [{
+                            "$type": "app.bsky.richtext.facet#link",
+                            "uri": url
+                        }]
+                    })
+                else:
+                    # Truncate summary to make room for URL
+                    available_space = 300 - len(url) - 3  # 3 for "\n\n"
+                    if available_space > 10:  # Ensure we have some meaningful text
+                        post_text = post_text[:available_space] + "...\n\n" + url
+                        # Create a facet for the link
+                        link_start = len(post_text) - len(url)
+                        link_end = len(post_text)
+                        facets.append({
+                            "index": {
+                                "byteStart": link_start,
+                                "byteEnd": link_end
+                            },
+                            "features": [{
+                                "$type": "app.bsky.richtext.facet#link",
+                                "uri": url
+                            }]
+                        })
+            
+            if self.test_mode:
+                self._log_test_post("Bluesky", entry['title'], post_text)
+                return True
+            else:
+                # Post the skeet with embed for link unfurling
+                if url:
+                    # Create an external embed for the URL using proper atproto models
+                    from atproto import models
+                    
+                    # Try to extract image from HTML content
+                    image_url = None
+                    content = entry.get('content', '')
+                    if content:
+                        # Unescape HTML entities
+                        unescaped_content = html.unescape(content)
+                        
+                        # Find the first <img> tag
+                        import re
+                        img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', unescaped_content)
+                        if img_match:
+                            image_url = img_match.group(1)
+                            print(f"DEBUG: Found image URL in content: {image_url}")
+                    
+                    # Download and upload image if available
+                    image_blob_ref = None
+                    temp_image_path = None
+                    if image_url:
+                        try:
+                            import requests
+                            import tempfile
+                            import os
+                            
+                            # Download the image to a temporary file
+                            response = requests.get(image_url, timeout=10)
+                            response.raise_for_status()
+                            
+                            # Determine the file extension from URL or content type
+                            import urllib.parse
+                            from pathlib import Path
+                            
+                            # Try to get extension from URL
+                            parsed_url = urllib.parse.urlparse(image_url)
+                            url_path = Path(parsed_url.path)
+                            extension = url_path.suffix
+                            
+                            # If no extension in URL, try to get from content type
+                            if not extension:
+                                content_type = response.headers.get('content-type', '')
+                                if 'png' in content_type:
+                                    extension = '.png'
+                                elif 'gif' in content_type:
+                                    extension = '.gif'
+                                elif 'webp' in content_type:
+                                    extension = '.webp'
+                                else:
+                                    extension = '.jpg'  # Default fallback
+                            
+                            # Create a temporary file with the correct extension
+                            temp_fd, temp_image_path = tempfile.mkstemp(suffix=extension)
+                            os.close(temp_fd)
+                            
+                            # Process the image to resize and compress
+                            from PIL import Image
+                            import io
+                            
+                            # Open the image
+                            img = Image.open(io.BytesIO(response.content))
+                            
+                            # Convert to RGB if necessary (for JPEG compression)
+                            if img.mode in ('RGBA', 'LA', 'P'):
+                                # Create a white background for transparent images
+                                background = Image.new('RGB', img.size, (255, 255, 255))
+                                if img.mode == 'P':
+                                    img = img.convert('RGBA')
+                                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                                img = background
+                            elif img.mode != 'RGB':
+                                img = img.convert('RGB')
+                            
+                            # Calculate new size maintaining aspect ratio
+                            target_width, target_height = 1200, 630
+                            img_width, img_height = img.size
+                            
+                            # Calculate scaling factor to fit within 1200x630
+                            scale_x = target_width / img_width
+                            scale_y = target_height / img_height
+                            scale = min(scale_x, scale_y)
+                            
+                            # Calculate new dimensions
+                            new_width = int(img_width * scale)
+                            new_height = int(img_height * scale)
+                            
+                            # Resize the image
+                            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                            
+                            # Create a new image with target size and white background
+                            final_img = Image.new('RGB', (target_width, target_height), (255, 255, 255))
+                            
+                            # Center the resized image
+                            x_offset = (target_width - new_width) // 2
+                            y_offset = (target_height - new_height) // 2
+                            final_img.paste(img, (x_offset, y_offset))
+                            
+                            # Save with compression to meet size requirements
+                            output_buffer = io.BytesIO()
+                            quality = 95
+                            
+                            # Try different quality levels to get under 900KB
+                            while quality > 10:
+                                output_buffer.seek(0)
+                                output_buffer.truncate()
+                                final_img.save(output_buffer, format='JPEG', quality=quality, optimize=True)
+                                
+                                if output_buffer.tell() <= 900 * 1024:  # 900KB in bytes
+                                    break
+                                quality -= 5
+                            
+                            # Save the processed image
+                            with open(temp_image_path, 'wb') as f:
+                                f.write(output_buffer.getvalue())
+                            
+                            # Upload to Bluesky
+                            with open(temp_image_path, 'rb') as f:
+                                img_data = f.read()
+                            upload_response = self.client.upload_blob(img_data)
+                            image_blob_ref = upload_response.blob
+                            
+                        except Exception as e:
+                            print(f"Warning: Failed to upload image {image_url}: {e}")
+                            image_blob_ref = None
+                        finally:
+                            # Clean up temporary file
+                            if temp_image_path and os.path.exists(temp_image_path):
+                                try:
+                                    os.unlink(temp_image_path)
+                                except Exception as e:
+                                    print(f"Warning: Failed to delete temporary image {temp_image_path}: {e}")
+                    
+                    # Define the external link details
+                    external_link = models.AppBskyEmbedExternal.External(
+                        uri=url,
+                        title=entry.get('title', ''),
+                        description=summary[:200] if summary else '',  # Limit description
+                        thumb=image_blob_ref  # Add the uploaded image blob reference
+                    )
+                    
+                    # Create the embed object
+                    embed = models.AppBskyEmbedExternal.Main(external=external_link)
+                    
+                    self.client.send_post(text=post_text, facets=facets, embed=embed)
+                else:
+                    # Post without embed if no URL
+                    self.client.send_post(text=post_text, facets=facets)
+                print(f"Posted to Bluesky: {entry['title']}")
+                return True
+            
+        except Exception as e:
+            if self.test_mode:
+                self._log_test_error("Bluesky", e)
+                return False
+            else:
+                print(f"Failed to post to Bluesky: {e}")
+                return False
+
+
+def load_credentials(creds_file):
     """
-    Write an entry to a text file named after the entry title.
+    Load credentials from YAML file.
     
     Args:
-        entry (dict): Entry data containing id, title, content, summary, url, and categories
-        output_dir (str): Directory to write the text file to
+        creds_file (str): Path to YAML credentials file
+        
+    Returns:
+        dict: Credentials for each service
     """
-    # Create output directory if it doesn't exist
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Sanitize the title for filename
-    filename = sanitize_filename(entry['title'])
-    text_file = os.path.join(output_dir, f"{filename}.txt")
-    
-    # Clean the summary text
-    summary = clean_html_text(entry.get('summary', ''))
-    
-    # Get de-duped categories
-    categories = list(set(entry.get('categories', [])))
-    
-    # Create text content
-    text_content = f"""Title: {entry['title']}
-
-Summary:
-{summary}
-
-URL: {entry.get('url', 'No URL available')}
-
-Categories: {', '.join(categories) if categories else 'No categories'}
-
-Entry ID: {entry['id']}
-"""
+    if not creds_file or not os.path.exists(creds_file):
+        return {}
     
     try:
-        with open(text_file, 'w', encoding='utf-8') as f:
-            f.write(text_content)
-        print(f"Processed entry: {entry['title']} -> {text_file}")
-    except IOError as e:
-        print(f"Error writing text file {text_file}: {e}")
+        with open(creds_file, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"Error loading credentials file {creds_file}: {e}")
+        return {}
+
+
+def get_syndication_services(credentials, test_mode=False):
+    """
+    Get available syndication services based on credentials.
+    
+    Args:
+        credentials (dict): Service credentials
+        test_mode (bool): Whether to run in test mode
+        
+    Returns:
+        list: List of SyndicationService instances
+    """
+    services = []
+    
+    # Add Bluesky service if credentials are available
+    if 'bsky' in credentials:
+        services.append(BlueskyService(credentials['bsky'], test_mode))
+    
+    return services
+
+
+def process_syndication(entry, services):
+    """
+    Process syndication for an entry based on its categories.
+    
+    Args:
+        entry (dict): Entry data
+        services (list): List of SyndicationService instances
+        
+    Returns:
+        bool: True if at least one service processed the entry
+    """
+    categories = entry.get('categories', [])
+    processed = False
+    
+    for service in services:
+        for category in categories:
+            if service.can_handle(category):
+                if service.post(entry):
+                    processed = True
+                break  # Only process once per service
+    
+    return processed
 
 
 def parse_arguments():
@@ -371,6 +688,8 @@ def parse_arguments():
 Examples:
   python PosseTool.py --feed https://example.com/feed.xml --history /path/to/history.txt
   python PosseTool.py -f https://example.com/feed.xml -H /path/to/history.txt
+  python PosseTool.py -f https://example.com/feed.xml -H /path/to/history.txt -c /path/to/creds.yaml
+  python PosseTool.py -f https://example.com/feed.xml -H /path/to/history.txt -c /path/to/creds.yaml -t
         """
     )
     
@@ -398,6 +717,17 @@ Examples:
         help='Enable verbose output'
     )
     
+    parser.add_argument(
+        '--creds', '-c',
+        help='Path to YAML credentials file for social media services'
+    )
+    
+    parser.add_argument(
+        '--test', '-t',
+        action='store_true',
+        help='Test mode: simulate syndication without actually posting'
+    )
+    
     return parser.parse_args()
 
 
@@ -411,19 +741,28 @@ def main():
     history_file = args.history
     output_dir = args.output_dir
     verbose = args.verbose
+    creds_file = args.creds
+    test_mode = args.test
     
     if verbose:
         print(f"Processing feed: {feed_url}")
         print(f"History file: {history_file}")
         print(f"Output directory: {output_dir}")
+        if creds_file:
+            print(f"Credentials file: {creds_file}")
+    
+    # Load credentials and initialize syndication services
+    credentials = load_credentials(creds_file)
+    services = get_syndication_services(credentials, test_mode)
+    
+    if verbose and services:
+        print(f"Loaded {len(services)} syndication service(s)")
+    
+    if test_mode:
+        print("[TEST MODE] Running in test mode - no actual posts will be made")
     
     # Download and parse the feed
     xml_content = download_feed(feed_url)
-    
-    # Temporarily print the feed content for debugging
-    print("=== DOWNLOADED FEED CONTENT ===")
-    print(xml_content)
-    print("=== END FEED CONTENT ===")
     
     entries = parse_feed(xml_content)
     
@@ -456,12 +795,19 @@ def main():
     
     if new_entries:
         print(f"Found {len(new_entries)} new entries to process:")
+        syndicated_count = 0
+        
         for entry in new_entries:
-            write_entry_to_text(entry, output_dir)
+            if process_syndication(entry, services):
+                syndicated_count += 1
         
         # Update history file
         save_history(history_file, processed_ids)
         print(f"Updated history file with {len(new_entries)} new entries.")
+        if test_mode:
+            print(f"[TEST MODE] Would have syndicated {syndicated_count} entries.")
+        else:
+            print(f"Successfully syndicated {syndicated_count} entries.")
     else:
         print("No new entries found.")
 
