@@ -721,7 +721,9 @@ class BlueskyService(SyndicationService):
                 image_blob_ref = self._process_image(image_url) if image_url else None
                 
                 # Create embed and post
-                embed = self._create_external_embed(url, entry, post_text, image_blob_ref)
+                # Use original summary for the embed, not the post text
+                original_summary = clean_html_text(entry.get('summary', ''))
+                embed = self._create_external_embed(url, entry, original_summary, image_blob_ref)
                 self.client.send_post(text=post_text, facets=facets, embed=embed)
             else:
                 # Post without embed
