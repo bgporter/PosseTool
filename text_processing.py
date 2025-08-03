@@ -69,6 +69,10 @@ def extract_first_meaningful_paragraph(content, max_length=300):
     content = content.replace('&#60;', '<')
     content = content.replace('&#62;', '>')
     
+    # Remove admonition divs and their contents before processing
+    # This handles the case where admonitions span multiple paragraphs
+    content = re.sub(r'<div[^>]*class\s*=\s*["\'][^"\']*admonition[^"\']*["\'][^>]*>.*?</div>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    
     # Split content into paragraphs (split on double newlines or <p> tags)
     # We need to handle <p> tags more carefully to include the full paragraph
     paragraphs = []

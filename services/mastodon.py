@@ -2,6 +2,7 @@
 Mastodon syndication service for PosseTool.
 """
 
+import os
 import unicodedata
 
 from .base import SyndicationService
@@ -20,29 +21,19 @@ class MastodonService(SyndicationService):
         return trigger_tag == 'mastodon'
     
     def authenticate(self):
-        """Authenticate with Mastodon using credentials."""
+        """Authenticate with Mastodon using access token."""
         try:
             from mastodon import Mastodon
             
-            # Create app if it doesn't exist
-            app_name = "PosseTool"
-            app_credentials_file = "mastodon_app_credentials.txt"
+            # Debug: print available credentials (without showing sensitive data)
+            print(f"DEBUG: Mastodon credentials keys: {list(self.credentials.keys())}")
+            print(f"DEBUG: Mastodon api_base_url: {self.credentials.get('api_base_url')}")
+            print(f"DEBUG: Mastodon access_token present: {'access_token' in self.credentials}")
             
-            if not os.path.exists(app_credentials_file):
-                Mastodon.create_app(
-                    app_name,
-                    api_base_url=self.credentials.get('api_base_url'),
-                    to_file=app_credentials_file
-                )
-            
-            # Log in
+            # Authenticate using access token directly
             self.client = Mastodon(
-                client_id=app_credentials_file,
-                api_base_url=self.credentials.get('api_base_url')
-            )
-            self.client.log_in(
-                self.credentials.get('email'),
-                self.credentials.get('password')
+                api_base_url=self.credentials.get('api_base_url'),
+                access_token=self.credentials.get('access_token')
             )
             return True
         except Exception as e:
@@ -108,8 +99,4 @@ class MastodonService(SyndicationService):
                 return False
             else:
                 print(f"Failed to post to Mastodon: {e}")
-                return False
-
-
-# Import os for file operations
-import os 
+                return False 
