@@ -32,6 +32,7 @@ import sys
 import os
 import argparse
 import yaml
+from datetime import datetime
 
 import config
 import feed
@@ -39,12 +40,36 @@ import text_processing
 from services import get_syndication_services
 
 
-def load_credentials(creds_file):
+def log(message):
+    """
+    Log a message with a timestamp.
+    
+    Args:
+        message (str): Message to log
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
+
+
+def debug_log(message, verbose=False):
+    """
+    Log a debug message with a timestamp only if verbose mode is enabled.
+    
+    Args:
+        message (str): Debug message to log
+        verbose (bool): Whether verbose mode is enabled
+    """
+    if verbose:
+        log(message)
+
+
+def load_credentials(creds_file, verbose=False):
     """
     Load credentials from YAML file.
     
     Args:
         creds_file (str): Path to YAML credentials file
+        verbose (bool): Whether to enable verbose logging
         
     Returns:
         dict: Credentials for each service
@@ -56,26 +81,28 @@ def load_credentials(creds_file):
         with open(creds_file, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f) or {}
     except Exception as e:
-        print(f"Error loading credentials file {creds_file}: {e}")
+        log(f"Error loading credentials file {creds_file}: {e}")
         return {}
 
 
-def process_syndication(entry, services):
+def process_syndication(entry, services, verbose=False):
     """
     Process syndication for an entry based on its categories.
     
     Args:
         entry (dict): Entry data
         services (list): List of SyndicationService instances
+        verbose (bool): Whether to enable verbose logging
         
     Returns:
         bool: True if at least one service processed the entry
     """
     categories = entry.get('categories', [])
     processed = False
+    title = entry.get('title', 'Unknown')
     
-    print(f"DEBUG: Processing entry '{entry.get('title', 'Unknown')}' with categories: {categories}")
-    print(f"DEBUG: Available services: {[service.__class__.__name__ for service in services]}")
+    debug_log(f"Processing entry '{entry.get('title', 'Unknown')}' with categories: {categories}", verbose)
+    debug_log(f"Available services: {[service.__class__.__name__ for service in services]}", verbose)
     
     # Check if "posse" category is present - if so, all services should publish
     should_publish_all = 'posse' in categories
@@ -85,31 +112,31 @@ def process_syndication(entry, services):
         
         if should_publish_all:
             # If "posse" is present, all services should publish
-            print(f"DEBUG: 'posse' category found - {service.__class__.__name__} will handle all entries")
+            debug_log(f"'posse' category found - {service.__class__.__name__} will handle all entries", verbose)
             if service.post(entry):
                 processed = True
                 service_processed = True
-                print(f"DEBUG: {service.__class__.__name__} successfully posted (posse)")
+                debug_log(f"{service.__class__.__name__} successfully posted (posse)", verbose)
             else:
-                print(f"DEBUG: {service.__class__.__name__} failed to post (posse)")
+                log(f"{service.__class__.__name__} failed to post {title}")
         else:
             # Normal category-based processing
             for category in categories:
-                print(f"DEBUG: Checking if {service.__class__.__name__} can handle '{category}'")
+                debug_log(f"Checking if {service.__class__.__name__} can handle '{category}'", verbose)
                 if service.can_handle(category):
-                    print(f"DEBUG: {service.__class__.__name__} will handle '{category}'")
+                    debug_log(f"{service.__class__.__name__} will handle '{category}'", verbose)
                     if service.post(entry):
                         processed = True
                         service_processed = True
-                        print(f"DEBUG: {service.__class__.__name__} successfully posted")
+                        debug_log(f"{service.__class__.__name__} successfully posted", verbose)
                     else:
-                        print(f"DEBUG: {service.__class__.__name__} failed to post")
+                        log(f"{service.__class__.__name__} failed to post {title}")
                     break  # Service handled this category, no need to check others
                 else:
-                    print(f"DEBUG: {service.__class__.__name__} cannot handle '{category}'")
+                    debug_log(f"{service.__class__.__name__} cannot handle '{category}'", verbose)
         
         if service_processed:
-            print(f"DEBUG: {service.__class__.__name__} processed this entry")
+            log(f"SUCCESS: {title} -> {service.__class__.__name__}")
     
     return processed
 
@@ -184,69 +211,68 @@ def main():
     creds_file = args.creds
     test_mode = args.test
     
-    if verbose:
-        print(f"Processing feed: {feed_url}")
-        print(f"History file: {history_file}")
-        print(f"Output directory: {output_dir}")
-        if creds_file:
-            print(f"Credentials file: {creds_file}")
+    debug_log(f"Processing feed: {feed_url}", verbose)
+    debug_log(f"History file: {history_file}", verbose)
+    debug_log(f"Output directory: {output_dir}", verbose)
+    if creds_file:
+        debug_log(f"Credentials file: {creds_file}", verbose)
     
     # Load credentials
-    credentials = load_credentials(creds_file)
+    credentials = load_credentials(creds_file, verbose)
     if not credentials:
-        print("Error: No credentials found. Please check your credentials file.")
+        log("Error: No credentials found. Please check your credentials file.")
         sys.exit(1)
     
     # Get available services
     services = get_syndication_services(credentials, test_mode)
     if not services:
-        print("Error: No syndication services available. Please check your credentials.")
+        log("Error: No syndication services available. Please check your credentials.")
         sys.exit(1)
     
-    print(f"Available services: {[service.__class__.__name__ for service in services]}")
+    debug_log(f"Available services: {[service.__class__.__name__ for service in services]}", verbose)
     
     # Download and parse feed
-    print(f"Downloading feed from {feed_url}")
+    debug_log(f"Downloading feed from {feed_url}", verbose)
     xml_content = feed.download_feed(feed_url)
     if not xml_content:
-        print("Error: Failed to download feed")
+        log("Error: Failed to download feed")
         sys.exit(1)
     
     entries = feed.parse_feed(xml_content)
     if not entries:
-        print("Error: No entries found in feed")
+        log("Error: No entries found in feed")
         sys.exit(1)
     
-    print(f"Found {len(entries)} entries in feed")
+    debug_log(f"Found {len(entries)} entries in feed", verbose)
     
     # Load history
     processed_ids = feed.load_history(history_file)
-    print(f"Loaded {len(processed_ids)} previously processed entries")
+    debug_log(f"Loaded {len(processed_ids)} previously processed entries", verbose)
     
     # Process new entries
     new_entries = [entry for entry in entries if entry['id'] not in processed_ids]
-    print(f"Found {len(new_entries)} new entries to process")
+    debug_log(f"Found {len(new_entries)} new entries to process", verbose)
     
     if not new_entries:
-        print("No new entries to process")
+        debug_log("No new entries to process", verbose)
         return
     
     # Process each new entry
     processed_count = 0
     for entry in new_entries:
-        print(f"\nProcessing: {entry['title']}")
+        debug_log(f"Processing: {entry['title']}", verbose)
         
-        if process_syndication(entry, services):
+        if process_syndication(entry, services, verbose):
             processed_ids.add(entry['id'])
             processed_count += 1
-            print(f"Successfully processed: {entry['title']}")
+            debug_log(f"Successfully processed: {entry['title']}", verbose)
         else:
-            print(f"Failed to process: {entry['title']}")
+            log(f"Failed to process: {entry['title']}")
     
     # Save updated history
     feed.save_history(history_file, processed_ids)
-    print(f"\nProcessed {processed_count} new entries")
-    print(f"Updated history file: {history_file}")
+    log(f"Processed {processed_count} new entries")
+    debug_log(f"Updated history file: {history_file}", verbose)
 
 
 if __name__ == '__main__':
