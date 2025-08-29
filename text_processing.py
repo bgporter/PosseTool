@@ -186,4 +186,82 @@ def extract_first_meaningful_paragraph(content, max_length=300):
             return current_text
     
     # If no meaningful paragraph found, return empty string
-    return '' 
+    return ''
+
+
+def extract_hashtags_from_categories(categories, reserved_tags=None):
+    """
+    Extract hashtags from categories, filtering out reserved trigger tags.
+    
+    Args:
+        categories (list): List of category terms from the feed entry
+        reserved_tags (set): Set of reserved trigger tags to filter out
+        
+    Returns:
+        set: Set of hashtag strings (without the # symbol)
+    """
+    if not categories:
+        return set()
+    
+    if reserved_tags is None:
+        # Import here to avoid circular imports
+        try:
+            from services import get_active_trigger_tags
+            # We need credentials to get active trigger tags, so we'll use a default set
+            # This will be overridden when the function is called with specific reserved_tags
+            reserved_tags = {'posse', 'bsky', 'mastodon'}
+        except ImportError:
+            # Fallback to default reserved tags if services module is not available
+            reserved_tags = {'posse', 'bsky', 'mastodon'}
+    
+    # Convert categories to lowercase and filter out reserved tags
+    hashtags = set()
+    for category in categories:
+        if category and category.lower() not in reserved_tags:
+            # Clean the category term and add to hashtags
+            cleaned = clean_html_text(category).strip()
+            if cleaned:
+                hashtags.add(cleaned.lower())
+    
+    return hashtags
+
+
+def format_hashtags_for_post(hashtags, max_length, post_text_length, url_length=0):
+    """
+    Format hashtags for inclusion in a post, respecting character limits.
+    
+    Args:
+        hashtags (set): Set of hashtag strings (without the # symbol)
+        max_length (int): Maximum character limit for the entire post
+        post_text_length (int): Current length of the post text
+        url_length (int): Length of the URL (if included)
+        
+    Returns:
+        str: Formatted hashtag string to append to the post, or empty string if no space
+    """
+    if not hashtags:
+        return ""
+    
+    # Calculate available space for hashtags
+    # Reserve space for newlines: 2 for post text + hashtags, 1 for hashtags + URL
+    newline_chars = 2 if url_length > 0 else 1
+    available_space = max_length - post_text_length - url_length - newline_chars
+    
+    if available_space <= 0:
+        return ""
+    
+    # Sort hashtags for consistent ordering
+    sorted_hashtags = sorted(hashtags)
+    
+    # Build hashtag string, adding hashtags until we run out of space
+    hashtag_string = ""
+    for hashtag in sorted_hashtags:
+        # Each hashtag needs "#" + hashtag + space
+        hashtag_with_space = f"#{hashtag} "
+        
+        if len(hashtag_string + hashtag_with_space) <= available_space:
+            hashtag_string += hashtag_with_space
+        else:
+            break
+    
+    return hashtag_string.strip() 

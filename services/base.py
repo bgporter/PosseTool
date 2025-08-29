@@ -14,6 +14,10 @@ class SyndicationService:
         """Check if this service can handle the given trigger tag."""
         return False
     
+    def get_trigger_tags(self):
+        """Get the trigger tags that this service responds to."""
+        return set()
+    
     def post(self, entry):
         """Post an entry to the service. Must be implemented by subclasses."""
         raise NotImplementedError

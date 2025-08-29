@@ -28,6 +28,10 @@ class BlueskyService(SyndicationService):
     def can_handle(self, trigger_tag):
         return trigger_tag == 'bsky'
     
+    def get_trigger_tags(self):
+        """Get the trigger tags that this service responds to."""
+        return {'bsky'}
+    
     def authenticate(self):
         """Authenticate with Bluesky using credentials."""
         try:

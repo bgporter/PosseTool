@@ -7,7 +7,7 @@ import unicodedata
 
 from .base import SyndicationService
 import config
-from text_processing import clean_html_text, extract_first_meaningful_paragraph
+from text_processing import clean_html_text, extract_first_meaningful_paragraph, extract_hashtags_from_categories, format_hashtags_for_post
 
 
 class MastodonService(SyndicationService):
@@ -19,6 +19,10 @@ class MastodonService(SyndicationService):
     
     def can_handle(self, trigger_tag):
         return trigger_tag == 'mastodon'
+    
+    def get_trigger_tags(self):
+        """Get the trigger tags that this service responds to."""
+        return {'mastodon'}
     
     def authenticate(self):
         """Authenticate with Mastodon using access token."""
@@ -43,12 +47,19 @@ class MastodonService(SyndicationService):
     def _prepare_post_text(self, entry):
         """Prepare the post text for Mastodon."""
         url = entry.get('url', '')
+        categories = entry.get('categories', [])
         
-        # Calculate available space for text (reserve space for URL first)
-        if url:
-            available_space = config.MASTODON_CHAR_LIMIT - len(url) - 2  # 2 for "\n\n" and Mastodon has 500 char limit
-        else:
-            available_space = config.MASTODON_CHAR_LIMIT
+        # Extract hashtags from categories, filtering out reserved trigger tags
+        hashtags = extract_hashtags_from_categories(categories)
+        
+        # Calculate available space for text (reserve space for URL and hashtags)
+        url_length = len(url) if url else 0
+        hashtag_length = 0
+        if hashtags:
+            # Estimate hashtag length (we'll calculate exact length later)
+            hashtag_length = sum(len(f"#{tag} ") for tag in hashtags) + 2  # +2 for newlines
+        
+        available_space = config.MASTODON_CHAR_LIMIT - url_length - hashtag_length - 2  # 2 for "\n\n"
         
         # Extract first meaningful paragraph from content with the available space
         content = entry.get('content', '')
@@ -62,8 +73,20 @@ class MastodonService(SyndicationService):
             if len(post_text) > available_space:
                 post_text = post_text[:available_space-3] + "..."
         
-        # Add URL if available
-        if url:
+        # Format hashtags for the remaining space
+        hashtag_string = format_hashtags_for_post(
+            hashtags, 
+            config.MASTODON_CHAR_LIMIT, 
+            len(post_text), 
+            url_length
+        )
+        
+        # Build the final post text
+        if hashtag_string and url:
+            post_text += f"\n{hashtag_string}\n\n{url}"
+        elif hashtag_string:
+            post_text += f"\n{hashtag_string}"
+        elif url:
             post_text += f"\n\n{url}"
         
         return post_text
