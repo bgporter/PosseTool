@@ -15,6 +15,7 @@ from io import BytesIO
 
 from .base import SyndicationService
 import config
+import standard_site
 from text_processing import clean_html_text, extract_first_meaningful_paragraph
 
 
@@ -222,17 +223,46 @@ class BlueskyService(SyndicationService):
             with open(output_path, 'wb') as f:
                 f.write(image_data)
     
-    def _create_external_embed(self, url, entry, summary, image_blob_ref):
+    def _resolve_associated_refs(self, url):
+        """
+        Look up the Standard Site document/publication records backing this
+        URL, so the embed can qualify for Bluesky's enhanced Standard Site
+        link card instead of a plain external-link card. Returns None (and
+        logs a warning) if resolution fails for any reason - the post still
+        goes out with a normal card in that case.
+        """
+        try:
+            return standard_site.resolve_associated_refs(url)
+        except Exception as e:
+            print(f"Warning: Failed to resolve Standard Site associatedRefs for {url}: {e}")
+            return None
+
+    def _create_external_embed(self, url, entry, summary, image_blob_ref, associated_refs=None):
         """Create an external embed for the URL."""
         from atproto import models
-        
-        external_link = models.AppBskyEmbedExternal.External(
+
+        external_kwargs = dict(
             uri=url,
             title=entry.get('title', ''),
             description=summary[:config.BLUESKY_DESCRIPTION_LIMIT] if summary else '',
             thumb=image_blob_ref
         )
-        
+
+        if associated_refs:
+            try:
+                external_link = models.AppBskyEmbedExternal.External(
+                    associated_refs=associated_refs, **external_kwargs
+                )
+            except TypeError:
+                print(
+                    "Warning: installed 'atproto' package doesn't support "
+                    "associatedRefs yet - posting without the Standard Site "
+                    "enhanced embed. Upgrade the 'atproto' package to fix this."
+                )
+                external_link = models.AppBskyEmbedExternal.External(**external_kwargs)
+        else:
+            external_link = models.AppBskyEmbedExternal.External(**external_kwargs)
+
         return models.AppBskyEmbedExternal.Main(external=external_link)
     
     def post(self, entry):
@@ -260,7 +290,10 @@ class BlueskyService(SyndicationService):
                 # Create embed and post
                 # Use original summary for the embed, not the post text
                 original_summary = clean_html_text(entry.get('summary', ''))
-                embed = self._create_external_embed(url, entry, original_summary, image_blob_ref)
+                associated_refs = self._resolve_associated_refs(url)
+                embed = self._create_external_embed(
+                    url, entry, original_summary, image_blob_ref, associated_refs
+                )
                 self.client.send_post(text=post_text, facets=facets, embed=embed)
             else:
                 # Post without embed
