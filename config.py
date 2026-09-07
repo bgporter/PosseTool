@@ -16,4 +16,12 @@ BLUESKY_DESCRIPTION_LIMIT = 200
 MASTODON_CHAR_LIMIT = 500
 
 # Text processing configuration
-DEFAULT_MAX_LENGTH = 300 
+DEFAULT_MAX_LENGTH = 300
+
+# Marks a feed <summary> as the blog engine's auto-truncated fallback rather
+# than an author-written teaser. See docs/adr/0001-detect-authored-summary-by-truncation-suffix.md
+SUMMARY_TRUNCATION_SUFFIX = '…'
+
+# Feed category terms that control syndication routing rather than being
+# genuine content tags.
+RESERVED_TRIGGER_TAGS = {'posse', 'bsky', 'mastodon'} 

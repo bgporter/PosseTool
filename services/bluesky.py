@@ -6,7 +6,6 @@ import os
 import re
 import tempfile
 import urllib.parse
-import unicodedata
 import requests
 import html
 from pathlib import Path
@@ -16,7 +15,7 @@ from io import BytesIO
 from .base import SyndicationService
 import config
 import standard_site
-from text_processing import clean_html_text, extract_first_meaningful_paragraph
+from text_processing import compose_post_text, format_content_tags_for_card
 
 
 class BlueskyService(SyndicationService):
@@ -50,31 +49,15 @@ class BlueskyService(SyndicationService):
     def _prepare_post_text(self, entry):
         """Prepare the post text and facets."""
         url = entry.get('url', '')
-        
-        # Calculate available space for text (reserve space for URL first)
-        if url:
-            available_space = config.BLUESKY_CHAR_LIMIT - len(url) - 2  # 2 for "\n\n"
-        else:
-            available_space = config.BLUESKY_CHAR_LIMIT
-        
-        # Extract first meaningful paragraph from content with the available space
-        content = entry.get('content', '')
-        post_text = extract_first_meaningful_paragraph(content, available_space)
-        
-        # If no meaningful paragraph found, fall back to summary
-        if not post_text:
-            summary = clean_html_text(entry.get('summary', ''))
-            post_text = unicodedata.normalize('NFC', summary)
-            # Truncate summary if needed
-            if len(post_text) > available_space:
-                post_text = post_text[:available_space-3] + "..."
-        
-        # Add URL if available
-        facets = []
-        if url:
-            post_text += f"\n\n{url}"
-            facets.append(self._create_link_facet(post_text, url))
-        
+        post_text = compose_post_text(
+            content=entry.get('content', ''),
+            summary=entry.get('summary', ''),
+            categories=entry.get('categories', []),
+            url=url,
+            max_length=config.BLUESKY_CHAR_LIMIT,
+        )
+
+        facets = [self._create_link_facet(post_text, url)] if url else []
         return post_text, facets
     
     def _create_link_facet(self, post_text, url):
@@ -237,14 +220,14 @@ class BlueskyService(SyndicationService):
             print(f"Warning: Failed to resolve Standard Site associatedRefs for {url}: {e}")
             return None
 
-    def _create_external_embed(self, url, entry, summary, image_blob_ref, associated_refs=None):
+    def _create_external_embed(self, url, entry, description, image_blob_ref, associated_refs=None):
         """Create an external embed for the URL."""
         from atproto import models
 
         external_kwargs = dict(
             uri=url,
             title=entry.get('title', ''),
-            description=summary[:config.BLUESKY_DESCRIPTION_LIMIT] if summary else '',
+            description=description[:config.BLUESKY_DESCRIPTION_LIMIT] if description else '',
             thumb=image_blob_ref
         )
 
@@ -288,11 +271,11 @@ class BlueskyService(SyndicationService):
                 image_blob_ref = self._process_image(image_url) if image_url else None
                 
                 # Create embed and post
-                # Use original summary for the embed, not the post text
-                original_summary = clean_html_text(entry.get('summary', ''))
+                # Show content tags in the card, since the summary is now the post's own body text
+                card_description = format_content_tags_for_card(entry.get('categories', []))
                 associated_refs = self._resolve_associated_refs(url)
                 embed = self._create_external_embed(
-                    url, entry, original_summary, image_blob_ref, associated_refs
+                    url, entry, card_description, image_blob_ref, associated_refs
                 )
                 self.client.send_post(text=post_text, facets=facets, embed=embed)
             else:
