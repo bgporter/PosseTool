@@ -15,7 +15,7 @@ from io import BytesIO
 from .base import SyndicationService
 import config
 import standard_site
-from text_processing import compose_post_text, format_content_tags_for_card
+from text_processing import compose_post_text, format_content_tags_for_card, extract_hashtags_from_categories
 
 
 class BlueskyService(SyndicationService):
@@ -57,13 +57,20 @@ class BlueskyService(SyndicationService):
             max_length=config.BLUESKY_CHAR_LIMIT,
         )
 
-        facets = [self._create_link_facet(post_text, url)] if url else []
+        facets = self._create_tag_facets(post_text, entry.get('categories', []))
+        if url:
+            facets.append(self._create_link_facet(post_text, url))
         return post_text, facets
-    
+
     def _create_link_facet(self, post_text, url):
         """Create a link facet for the given URL."""
-        link_start = len(post_text) - len(url)
-        link_end = len(post_text)
+        # Bluesky facet ranges are UTF-8 byte offsets, not character offsets;
+        # the URL is ASCII so its own length is the same either way, but
+        # everything before it in post_text may not be.
+        text_bytes = post_text.encode('utf-8')
+        url_bytes = url.encode('utf-8')
+        link_start = len(text_bytes) - len(url_bytes)
+        link_end = len(text_bytes)
         return {
             "index": {
                 "byteStart": link_start,
@@ -74,6 +81,32 @@ class BlueskyService(SyndicationService):
                 "uri": url
             }]
         }
+
+    def _create_tag_facets(self, post_text, categories):
+        """Create tag facets for each content-tag hashtag present in post_text."""
+        hashtags = extract_hashtags_from_categories(categories)
+        if not hashtags:
+            return []
+
+        text_bytes = post_text.encode('utf-8')
+        facets = []
+        for tag in hashtags:
+            needle = f"#{tag}".encode('utf-8')
+            start = text_bytes.find(needle)
+            if start == -1:
+                # Tag didn't make it into the text (dropped for lack of space)
+                continue
+            facets.append({
+                "index": {
+                    "byteStart": start,
+                    "byteEnd": start + len(needle)
+                },
+                "features": [{
+                    "$type": "app.bsky.richtext.facet#tag",
+                    "tag": tag
+                }]
+            })
+        return facets
     
     def _extract_image_from_content(self, content):
         """Extract the first image URL from HTML content."""
